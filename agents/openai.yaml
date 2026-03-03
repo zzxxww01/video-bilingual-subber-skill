@@ -1,0 +1,3 @@
+interface:
+  display_name: "Video Bilingual Subber"
+  short_description: "Generate Gemini-based bilingual subtitles and short-video copy"
