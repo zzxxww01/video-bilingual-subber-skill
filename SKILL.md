@@ -7,6 +7,21 @@ description: Generate bilingual Chinese-English hard subtitles for local videos 
 
 Run this workflow for local short videos and Gemini API.
 
+## Codex Execution Rule
+
+When Codex is executing this skill for a user, do **not** run the whole pipeline straight through before user review.
+
+Required interaction gate:
+- Run only until the bilingual SRT is ready.
+- Then stop and review the subtitles with the user directly in the chat.
+- Codex should read the generated bilingual SRT itself and present a concise review sample in the conversation.
+- Codex should ask the user whether the subtitles look correct and whether to continue.
+- Wait for an explicit confirmation such as `continue` / `confirm` / `approve`.
+- Only after that confirmation may Codex continue to ASS generation, hard-sub burn, and copy generation.
+- Do not treat "I wrote the file" or "here is the path" as sufficient review.
+
+This means Codex should prefer the step-by-step workflow below over the one-command pipeline during an interactive session.
+
 ## Required Environment
 
 - Set `GEMINI_API_KEY` in environment or in `.env.local` (recommended from `.env.example`).
@@ -25,23 +40,30 @@ Run this workflow for local short videos and Gemini API.
    - `python .codex/skills/video-bilingual-subber/scripts/transcribe_gemini.py --in "<video>.mp4" --out "subs/en.raw.srt" --model "gemini-3-pro-preview"`
 3. Translate to Chinese and build bilingual SRT (Chinese first line, English second line):
    - `python .codex/skills/video-bilingual-subber/scripts/translate_bilingual.py --in "subs/en.raw.srt" --out "subs/zh_en.srt" --model "gemini-3-pro-preview" --batch-size 20`
-4. Convert bilingual SRT to ASS with larger Chinese subtitles:
+4. **Stop here for human review when Codex is driving the workflow.**
+   - Codex must open/read `subs/zh_en.srt` itself.
+   - Show the user a concise sample directly in chat.
+   - Ask for explicit confirmation before proceeding.
+   - If the user requests subtitle fixes, make those fixes first and ask for confirmation again.
+5. Convert bilingual SRT to ASS with larger Chinese subtitles:
    - `python .codex/skills/video-bilingual-subber/scripts/srt_to_ass.py --in "subs/zh_en.srt" --out "subs/zh_en.ass" --zh-size 48 --en-size 34`
-5. Burn ASS subtitles into MP4:
+6. Burn ASS subtitles into MP4:
    - `python .codex/skills/video-bilingual-subber/scripts/burn_ass.py --video "<video>.mp4" --ass "subs/zh_en.ass" --out "final_videos/<video>.zh-en-hard.mp4"`
-6. Generate simple copy package:
+7. Generate simple copy package:
    - `python .codex/skills/video-bilingual-subber/scripts/generate_copy.py --video "<video>.mp4" --srt "subs/zh_en.srt" --model "gemini-3-pro-preview" --out "output/<video>.copy.json"`
 
-### Default One-Command Run
+### Manual One-Command Run
 
 - `python .codex/skills/video-bilingual-subber/scripts/run_pipeline.py "<video>.mp4"`
 
-This default command does all of the following:
+Use this only for manual shell usage when an interactive Codex checkpoint is not needed.
+
+This command does all of the following:
 - Use model `gemini-3-pro-preview`.
 - Generate bilingual subtitles (Chinese first line, English second line).
 - Generate ASS style with larger Chinese text.
 - Generate subtitle review text file for manual confirmation.
-- Stop before burning (burn is blocked by default).
+- Stop before burning; the first run always holds for review even if `--approve-burn` was passed.
 - Resume from existing outputs if previous run already produced partial files.
 
 ### Required Confirm-Before-Burn Step
@@ -50,7 +72,7 @@ After reviewing subtitles, burn with explicit approval:
 
 - `python .codex/skills/video-bilingual-subber/scripts/run_pipeline.py "<video>.mp4" --approve-burn --resume`
 
-This forced two-step workflow guarantees subtitle review before hard-sub burn.
+This forced two-step workflow is acceptable for direct terminal use, but when Codex is executing the skill it should still pause after Step 3, inspect the generated subtitles itself, and ask the user directly before continuing.
 
 Optional:
 - Disable copy generation: `--no-copy`

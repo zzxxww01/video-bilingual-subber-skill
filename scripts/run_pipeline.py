@@ -68,6 +68,8 @@ def write_review_file(srt_path: Path, review_path: Path, review_lines: int) -> t
     lines: list[str] = []
     lines.append(f"Subtitle review for: {srt_path.name}")
     lines.append(f"Total entries: {len(entries)}")
+    lines.append("Review status: pending manual check")
+    lines.append("Next step: inspect this file, then rerun with --approve-burn --resume.")
     lines.append("")
     lines.append("Sample:")
     lines.append("")
@@ -128,6 +130,14 @@ def main() -> int:
     out_log = logs_dir / f"{stem}.zh-en-hard.ffmpeg.log"
     out_copy = output_dir / f"{stem}.copy.json"
     review_txt = output_dir / f"{stem}.subtitle-review.txt"
+    had_review_file = exists_nonempty(review_txt)
+    review_is_stale = True
+    if had_review_file:
+        review_mtime = review_txt.stat().st_mtime
+        review_is_stale = any(
+            exists_nonempty(path) and review_mtime < path.stat().st_mtime
+            for path in (bi_srt, bi_ass)
+        )
 
     do_copy = True
     if args.copy:
@@ -142,6 +152,8 @@ def main() -> int:
             glossary_path = Path(args.glossary).resolve()
         elif DEFAULT_GLOSSARY.exists():
             glossary_path = DEFAULT_GLOSSARY
+
+    review_required = (not had_review_file) or review_is_stale
 
     # Ensure this process inherits no stale PYTHONDONTWRITEBYTECODE choice from previous runs.
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
@@ -162,6 +174,7 @@ def main() -> int:
             ],
             cwd=root,
         )
+        review_required = True
     else:
         print(f"[skip] transcription exists: {en_srt}")
 
@@ -181,6 +194,7 @@ def main() -> int:
         if glossary_path:
             translate_cmd.extend(["--glossary", str(glossary_path)])
         run(translate_cmd, cwd=root)
+        review_required = True
     else:
         print(f"[skip] bilingual srt exists: {bi_srt}")
 
@@ -200,6 +214,7 @@ def main() -> int:
             ],
             cwd=root,
         )
+        review_required = True
     else:
         print(f"[skip] ass exists: {bi_ass}")
 
@@ -209,12 +224,21 @@ def main() -> int:
     print(f"[review] total entries: {total_entries}")
     print(f"[review] first zh line: {first_zh}")
 
+    next_cmd = (
+        f"python {SCRIPT_ROOT / 'run_pipeline.py'} "
+        f"\"{video}\" --approve-burn --resume"
+    )
+
+    if review_required:
+        print("[hold] Review required because subtitle outputs were created or updated in this run.")
+        print(f"[action] Open the review sample and check translations before burning: {review_txt}")
+        print(f"[next] After review, rerun: {next_cmd}")
+        return 0
+
     if not args.approve_burn:
         print("[hold] Burn step is blocked until you confirm subtitles.")
-        print(
-            f"[next] After confirmation, run: python {SCRIPT_ROOT / 'run_pipeline.py'} "
-            f"\"{video}\" --approve-burn --resume"
-        )
+        print(f"[action] Open the review sample and check translations before burning: {review_txt}")
+        print(f"[next] After confirmation, run: {next_cmd}")
         return 0
 
     if not (resume and exists_nonempty(out_mp4)):

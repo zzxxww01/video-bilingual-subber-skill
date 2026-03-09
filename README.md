@@ -35,6 +35,10 @@ python scripts/run_pipeline.py "your_video.mp4"
 python scripts/run_pipeline.py "your_video.mp4" --approve-burn --resume
 ```
 
+Notes:
+- The first run always stops after generating `output/*.subtitle-review.txt`, even if you already passed `--approve-burn`.
+- Burn only happens on a later run after you review the generated sample file.
+
 ## Security Rules
 
 - Never commit `.env`, `.env.local`, private keys, or raw tokens.
