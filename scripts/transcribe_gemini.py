@@ -9,19 +9,19 @@ from typing import Any
 
 from common import (
     SrtEntry,
+    configure_stdio_utf8,
     delete_file,
     extract_json_text,
     extract_text_from_response,
     generate_content,
     get_api_key,
+    get_default_model,
     guess_mime,
     retry,
     upload_file,
     wait_for_file_active,
     write_srt,
 )
-
-DEFAULT_MODEL = "gemini-3-pro-preview"
 
 DEFAULT_SYSTEM = (
     "You are an accurate subtitle transcriber for English video/audio. "
@@ -103,10 +103,11 @@ def load_prompt(prompt_file: Path | None) -> str:
 
 
 def main() -> int:
+    configure_stdio_utf8()
     parser = argparse.ArgumentParser()
     parser.add_argument("--in", dest="input_path", required=True, help="Input media file")
     parser.add_argument("--out", dest="output_path", required=True, help="Output English SRT path")
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--model", default=get_default_model())
     parser.add_argument("--api-key", help="Gemini API key (or use GEMINI_API_KEY env var)")
     parser.add_argument("--prompt-file", type=Path, help="Optional prompt file")
     parser.add_argument("--keep-upload", action="store_true", help="Keep uploaded Gemini file for debugging")
@@ -121,67 +122,69 @@ def main() -> int:
     api_key = get_api_key(args.api_key)
     mime_type = guess_mime(input_path)
     prompt = load_prompt(args.prompt_file)
+    file_name = ""
 
-    print(f"[info] uploading media: {input_path} ({mime_type})")
-    file_meta = retry(
-        lambda: upload_file(api_key, input_path, mime_type=mime_type),
-        attempts=3,
-        label="file upload",
-    )
-    file_name = file_meta.get("name", "")
-    file_uri = file_meta.get("uri", "")
-    if not file_name or not file_uri:
-        raise RuntimeError(f"Unexpected uploaded file metadata: {file_meta}")
+    try:
+        print(f"[info] uploading media: {input_path} ({mime_type})")
+        file_meta = retry(
+            lambda: upload_file(api_key, input_path, mime_type=mime_type),
+            attempts=3,
+            label="file upload",
+        )
+        file_name = file_meta.get("name", "")
+        file_uri = file_meta.get("uri", "")
+        if not file_name or not file_uri:
+            raise RuntimeError(f"Unexpected uploaded file metadata: {file_meta}")
 
-    print(f"[info] uploaded file={file_name}, waiting until ACTIVE ...")
-    active_meta = retry(
-        lambda: wait_for_file_active(api_key, file_name),
-        attempts=3,
-        label="wait for uploaded file",
-    )
-    mime_type = active_meta.get("mimeType", mime_type)
+        print(f"[info] uploaded file={file_name}, waiting until ACTIVE ...")
+        active_meta = retry(
+            lambda: wait_for_file_active(api_key, file_name),
+            attempts=3,
+            label="wait for uploaded file",
+        )
+        mime_type = active_meta.get("mimeType", mime_type)
 
-    parts = [
-        {"file_data": {"mime_type": mime_type, "file_uri": file_uri}},
-        {"text": prompt},
-    ]
-    print(f"[info] requesting transcription from model={args.model} ...")
-    response = retry(
-        lambda: generate_content(
-            api_key=api_key,
-            model=args.model,
-            parts=parts,
-            system_instruction=DEFAULT_SYSTEM,
-            temperature=0.0,
-            response_mime_type="application/json",
-            response_schema=RESPONSE_SCHEMA,
-        ),
-        attempts=3,
-        label="transcription request",
-    )
+        parts = [
+            {"file_data": {"mime_type": mime_type, "file_uri": file_uri}},
+            {"text": prompt},
+        ]
+        print(f"[info] requesting transcription from model={args.model} ...")
+        response = retry(
+            lambda: generate_content(
+                api_key=api_key,
+                model=args.model,
+                parts=parts,
+                system_instruction=DEFAULT_SYSTEM,
+                temperature=0.0,
+                response_mime_type="application/json",
+                response_schema=RESPONSE_SCHEMA,
+            ),
+            attempts=3,
+            label="transcription request",
+        )
 
-    raw_text = extract_text_from_response(response)
-    parsed = extract_json_text(raw_text)
-    if isinstance(parsed, dict):
-        raw_segments = parsed.get("segments", [])
-    elif isinstance(parsed, list):
-        raw_segments = parsed
-    else:
-        raise RuntimeError(f"Unexpected transcription payload type: {type(parsed)}")
+        raw_text = extract_text_from_response(response)
+        parsed = extract_json_text(raw_text)
+        if isinstance(parsed, dict):
+            raw_segments = parsed.get("segments", [])
+        elif isinstance(parsed, list):
+            raw_segments = parsed
+        else:
+            raise RuntimeError(f"Unexpected transcription payload type: {type(parsed)}")
 
-    segments = normalize_segments(raw_segments)
-    if not segments:
-        raise RuntimeError("No valid segments returned by transcription model.")
+        segments = normalize_segments(raw_segments)
+        if not segments:
+            raise RuntimeError("No valid segments returned by transcription model.")
 
-    write_srt(output_path, segments)
-    print(f"[done] wrote {len(segments)} subtitle entries -> {output_path}")
-
-    if not args.keep_upload:
-        try:
-            delete_file(api_key, file_name)
-            print(f"[info] deleted uploaded file {file_name}")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[warn] failed to delete uploaded file {file_name}: {exc}")
+        write_srt(output_path, segments)
+        print(f"[done] wrote {len(segments)} subtitle entries -> {output_path}")
+    finally:
+        if file_name and not args.keep_upload:
+            try:
+                delete_file(api_key, file_name)
+                print(f"[info] deleted uploaded file {file_name}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[warn] failed to delete uploaded file {file_name}: {exc}")
     return 0
 
 

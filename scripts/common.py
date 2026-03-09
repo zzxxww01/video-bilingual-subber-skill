@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,8 @@ from urllib.request import Request, urlopen
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 UPLOAD_ROOT = "https://generativelanguage.googleapis.com/upload/v1beta"
 _ENV_LOADED = False
+FALLBACK_GEMINI_MODEL = "gemini-3-pro-preview"
+PATH_LIKE_ENV_SUFFIXES = ("_FILE", "_PATH", "_BIN")
 SENSITIVE_QUERY_KEYS = {"key", "api_key", "apikey", "token", "access_token"}
 SENSITIVE_CLI_FLAGS = {
     "--api-key",
@@ -38,6 +41,17 @@ class SrtEntry:
     start_ms: int
     end_ms: int
     text: str
+
+
+def configure_stdio_utf8() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except Exception:
+            continue
 
 
 def sanitize_url(url: str) -> str:
@@ -121,16 +135,36 @@ def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def resolve_env_value(raw_key: str, raw_value: str, *, base_dir: Path) -> str:
+    key = raw_key.strip().upper()
+    value = raw_value.strip().strip("'").strip('"')
+    if not value:
+        return value
+    if not any(key.endswith(suffix) for suffix in PATH_LIKE_ENV_SUFFIXES):
+        return value
+
+    candidate = Path(value)
+    if candidate.is_absolute():
+        return str(candidate)
+    return str((base_dir / candidate).resolve())
+
+
+def iter_dotenv_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    for directory in [Path.cwd(), *Path.cwd().parents]:
+        candidates.append(directory / ".env.local")
+        candidates.append(directory / ".env")
+        if (directory / ".git").exists():
+            break
+    return candidates
+
+
 def load_dotenv_if_present() -> None:
     global _ENV_LOADED
     if _ENV_LOADED:
         return
 
-    candidates = [
-        Path.cwd() / ".env",
-        Path.cwd() / ".env.local",
-    ]
-    for path in candidates:
+    for path in iter_dotenv_candidates():
         if not path.exists():
             continue
         for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
@@ -139,7 +173,7 @@ def load_dotenv_if_present() -> None:
                 continue
             key, value = line.split("=", 1)
             key = key.strip()
-            value = value.strip().strip("'").strip('"')
+            value = resolve_env_value(key, value, base_dir=path.parent)
             if key and key not in os.environ:
                 os.environ[key] = value
     _ENV_LOADED = True
@@ -155,6 +189,30 @@ def get_api_key(explicit_key: str | None = None) -> str:
             "GEMINI_API_KEY is not set. Provide --api-key, export GEMINI_API_KEY, or set it in .env."
         )
     return key.strip()
+
+
+def get_default_model() -> str:
+    load_dotenv_if_present()
+    model = os.getenv("GEMINI_MODEL", "").strip()
+    return model or FALLBACK_GEMINI_MODEL
+
+
+def get_optional_path_env(*names: str) -> Path | None:
+    load_dotenv_if_present()
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return Path(value).expanduser().resolve()
+    return None
+
+
+def get_optional_text_env(*names: str) -> str | None:
+    load_dotenv_if_present()
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return None
 
 
 def retry(
@@ -492,6 +550,8 @@ def run_subprocess(
         args,
         cwd=str(cwd) if cwd else None,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
     )

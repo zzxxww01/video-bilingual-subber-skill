@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import platform
+import shutil
 import sys
 from pathlib import Path
 
-from common import get_api_key, resolve_ffmpeg, resolve_ffprobe, run_subprocess
+from common import configure_stdio_utf8, get_api_key, resolve_ffmpeg, resolve_ffprobe, run_subprocess
 
 
 def has_ass_filter(ffmpeg_path: str) -> bool:
@@ -51,9 +53,23 @@ def check_ffprobe(ffmpeg_path: str | None) -> tuple[bool, str]:
     return True, f"ffprobe found: {first_line}"
 
 
+def check_youtube_downloader() -> tuple[bool, str]:
+    if importlib.util.find_spec("yt_dlp") is not None:
+        return True, "yt_dlp Python module is available"
+    yt_dlp_cli = shutil.which("yt-dlp")
+    if yt_dlp_cli:
+        return True, f"yt-dlp CLI found: {yt_dlp_cli}"
+    return False, "yt-dlp is missing. Install it with `pip install -r requirements.txt`."
+
+
 def main() -> int:
+    configure_stdio_utf8()
     parser = argparse.ArgumentParser()
     parser.add_argument("--ffmpeg", help="Explicit ffmpeg binary path")
+    parser.add_argument("--need-youtube", action="store_true", help="Check yt-dlp availability for YouTube downloads")
+    parser.add_argument("--skip-api-key", action="store_true", help="Skip GEMINI_API_KEY check")
+    parser.add_argument("--skip-ffmpeg", action="store_true", help="Skip ffmpeg/ffprobe checks")
+    parser.add_argument("--skip-ass-filter", action="store_true", help="Skip ffmpeg ASS filter check")
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -66,16 +82,29 @@ def main() -> int:
     py_ok, py_msg = check_python()
     checks.append(("python", py_ok, py_msg))
 
-    key_ok, key_msg = check_api_key()
+    if args.need_youtube:
+        youtube_ok, youtube_msg = check_youtube_downloader()
+        checks.append(("yt_dlp", youtube_ok, youtube_msg))
+
+    if args.skip_api_key:
+        key_ok, key_msg = True, "GEMINI_API_KEY check skipped"
+    else:
+        key_ok, key_msg = check_api_key()
     checks.append(("gemini_api_key", key_ok, key_msg))
 
-    ffmpeg_ok, ffmpeg_msg, ffmpeg_path = check_ffmpeg(args.ffmpeg)
+    if args.skip_ffmpeg:
+        ffmpeg_ok, ffmpeg_msg, ffmpeg_path = True, "ffmpeg check skipped", None
+    else:
+        ffmpeg_ok, ffmpeg_msg, ffmpeg_path = check_ffmpeg(args.ffmpeg)
     checks.append(("ffmpeg", ffmpeg_ok, ffmpeg_msg))
 
-    ffprobe_ok, ffprobe_msg = check_ffprobe(ffmpeg_path)
+    if args.skip_ffmpeg:
+        ffprobe_ok, ffprobe_msg = True, "ffprobe check skipped"
+    else:
+        ffprobe_ok, ffprobe_msg = check_ffprobe(ffmpeg_path)
     checks.append(("ffprobe", ffprobe_ok, ffprobe_msg))
 
-    if ffmpeg_ok and ffmpeg_path:
+    if not args.skip_ffmpeg and not args.skip_ass_filter and ffmpeg_ok and ffmpeg_path:
         ass_ok = has_ass_filter(ffmpeg_path)
         checks.append(
             (

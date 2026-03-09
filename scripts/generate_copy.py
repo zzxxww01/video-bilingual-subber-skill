@@ -10,15 +10,15 @@ from pathlib import Path
 from typing import Any
 
 from common import (
+    configure_stdio_utf8,
     extract_json_text,
     extract_text_from_response,
     generate_content,
     get_api_key,
+    get_default_model,
     parse_srt,
     retry,
 )
-
-DEFAULT_MODEL = "gemini-3-pro-preview"
 
 SYSTEM_PROMPT = (
     "You are a Chinese short-video copywriter. Produce practical publish-ready text."
@@ -115,11 +115,12 @@ def safe_console_text(text: str) -> str:
 
 
 def main() -> int:
+    configure_stdio_utf8()
     parser = argparse.ArgumentParser()
     parser.add_argument("--video")
     parser.add_argument("--srt")
     parser.add_argument("--out", required=True)
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--model", default=get_default_model())
     parser.add_argument("--api-key")
     args = parser.parse_args()
 

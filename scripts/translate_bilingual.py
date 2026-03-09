@@ -10,17 +10,17 @@ from typing import Any
 
 from common import (
     SrtEntry,
+    configure_stdio_utf8,
     extract_json_text,
     extract_text_from_response,
     generate_content,
     get_api_key,
+    get_default_model,
     parse_srt,
     retry,
     split_batches,
     write_srt,
 )
-
-DEFAULT_MODEL = "gemini-3-pro-preview"
 
 SYSTEM_PROMPT = (
     "You are a professional subtitle translator. Translate English subtitle lines into concise "
@@ -49,7 +49,7 @@ RESPONSE_SCHEMA = {
 def load_glossary(path: Path | None) -> dict[str, str]:
     if not path:
         return {}
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(raw, dict):
         raise ValueError(f"Glossary must be a JSON object: {path}")
     return {str(k): str(v) for k, v in raw.items()}
@@ -131,10 +131,11 @@ def translate_batch(
 
 
 def main() -> int:
+    configure_stdio_utf8()
     parser = argparse.ArgumentParser()
     parser.add_argument("--in", dest="input_srt", required=True)
     parser.add_argument("--out", dest="output_srt", required=True)
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--model", default=get_default_model())
     parser.add_argument("--api-key")
     parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument("--glossary", type=Path)
