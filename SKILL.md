@@ -2,6 +2,7 @@
 name: video-bilingual-subber
 description: Generate bilingual Chinese-English hard subtitles for videos. Use this skill when the user asks to "add bilingual subtitles", "add CN+EN subtitles", "burn Chinese and English captions", "process YouTube video with subtitles", "generate bilingual subs", mentions "双语字幕", "中英字幕", or wants to create hard-subtitled videos with Chinese above English. Also applies when user wants to generate short-video copy (title/description/hashtags) from video content.
 version: 2.0.0
+license: MIT License - see LICENSE file
 ---
 
 # Video Bilingual Subber
