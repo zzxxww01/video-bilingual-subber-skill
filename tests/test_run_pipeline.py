@@ -29,6 +29,15 @@ ZH line two
 World
 """
 
+ZH_SRT = """1
+00:00:00,000 --> 00:00:01,000
+ZH line one
+
+2
+00:00:01,000 --> 00:00:02,000
+ZH line two
+"""
+
 
 class RunPipelineReviewFlowTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -100,8 +109,9 @@ class RunPipelineReviewFlowTests(unittest.TestCase):
 
         if script_name == "translate_bilingual.py":
             out = Path(cmd[cmd.index("--out") + 1])
+            layout = cmd[cmd.index("--layout") + 1] if "--layout" in cmd else "bilingual"
             out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(BI_SRT, encoding="utf-8-sig")
+            out.write_text(ZH_SRT if layout == "zh-only" else BI_SRT, encoding="utf-8-sig")
             return
 
         if script_name == "srt_to_ass.py":
@@ -308,6 +318,39 @@ class RunPipelineReviewFlowTests(unittest.TestCase):
         self.assertGreaterEqual(self.commands.count("download_youtube.py"), 2)
         review_path = self.temp_dir / "output" / "Example ok999 [ok999].subtitle-review.txt"
         self.assertTrue(review_path.exists())
+
+    def test_zh_only_first_run_uses_mode_specific_outputs(self) -> None:
+        with patch.object(run_pipeline, "run", side_effect=self.fake_run):
+            rc = self.invoke("clip.mp4", "--zh-only")
+
+        self.assertEqual(rc, 0)
+        translate_cmd = next(cmd for cmd in self.command_args if Path(cmd[1]).name == "translate_bilingual.py")
+        ass_cmd = next(cmd for cmd in self.command_args if Path(cmd[1]).name == "srt_to_ass.py")
+        self.assertEqual(translate_cmd[translate_cmd.index("--layout") + 1], "zh-only")
+        self.assertEqual(ass_cmd[ass_cmd.index("--layout") + 1], "zh-only")
+        self.assertTrue((self.temp_dir / "subs" / "clip.zh.srt").exists())
+        self.assertTrue((self.temp_dir / "output" / "clip.zh.subtitle-review.txt").exists())
+        self.assertFalse((self.temp_dir / "final_videos" / "clip.zh-hard.mp4").exists())
+        review_text = (self.temp_dir / "output" / "clip.zh.subtitle-review.txt").read_text(encoding="utf-8-sig")
+        self.assertIn("ZH: ZH line one", review_text)
+        self.assertIn("EN: Hello", review_text)
+
+    def test_zh_only_second_run_can_burn_after_review_file_already_exists(self) -> None:
+        subs_dir = self.temp_dir / "subs"
+        output_dir = self.temp_dir / "output"
+        subs_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (subs_dir / "clip.en.raw.srt").write_text(EN_SRT, encoding="utf-8-sig")
+        (subs_dir / "clip.zh.srt").write_text(ZH_SRT, encoding="utf-8-sig")
+        (subs_dir / "clip.zh.ass").write_text("[Script Info]\n", encoding="utf-8")
+        (output_dir / "clip.zh.subtitle-review.txt").write_text("already reviewed", encoding="utf-8")
+
+        with patch.object(run_pipeline, "run", side_effect=self.fake_run):
+            rc = self.invoke("clip.mp4", "--zh-only", "--approve-burn", "--resume", "--no-copy")
+
+        self.assertEqual(rc, 0)
+        self.assertIn("burn_ass.py", self.commands)
+        self.assertTrue((self.temp_dir / "final_videos" / "clip.zh-hard.mp4").exists())
 
 
 if __name__ == "__main__":

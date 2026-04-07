@@ -29,6 +29,7 @@ final_videos/
 *.bak
 
 # IDE/OS
+.claude/
 .vscode/
 .idea/
 .DS_Store
@@ -44,4 +45,3 @@ Thumbs.db
 *.der
 *.jks
 *.keystore
-

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run end-to-end bilingual subtitle + copy generation pipeline."""
+"""Run end-to-end Chinese-only or bilingual hard subtitle pipeline."""
 
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ DEFAULT_DOWNLOAD_DIR = "downloads"
 MANIFEST_VERSION = 2
 VIDEO_SUFFIXES = [".mp4", ".mov", ".mkv", ".m4v", ".webm"]
 _SHA256_SIZE_LIMIT = 100 * 1024 * 1024  # skip SHA256 for files > 100 MB
+LAYOUT_BILINGUAL = "bilingual"
+LAYOUT_ZH_ONLY = "zh-only"
 
 
 @dataclass
@@ -184,10 +186,20 @@ def record_artifact(manifest: dict[str, Any], name: str, config: dict[str, Any],
     manifest.setdefault("artifacts", {})[name] = artifact_record(config=config, inputs=inputs)
 
 
-def write_review_file(srt_path: Path, review_path: Path, review_lines: int) -> tuple[int, str]:
+def write_review_file(
+    srt_path: Path,
+    review_path: Path,
+    review_lines: int,
+    layout: str,
+    *,
+    english_srt_path: Path | None = None,
+) -> tuple[int, str]:
     entries = parse_srt(srt_path)
     if not entries:
         raise RuntimeError(f"No subtitle entries for review: {srt_path}")
+    english_by_index: dict[int, str] = {}
+    if english_srt_path and exists_nonempty(english_srt_path):
+        english_by_index = {entry.index: entry.text for entry in parse_srt(english_srt_path)}
 
     review_path.parent.mkdir(parents=True, exist_ok=True)
     preview_count = max(1, review_lines)
@@ -204,9 +216,12 @@ def write_review_file(srt_path: Path, review_path: Path, review_lines: int) -> t
         text_lines = entry.text.splitlines()
         zh = text_lines[0] if text_lines else ""
         en = " ".join(text_lines[1:]).strip() if len(text_lines) > 1 else ""
+        if layout == LAYOUT_ZH_ONLY:
+            en = " ".join(english_by_index.get(entry.index, "").split()).strip()
         lines.append(f"[{entry.index}] {entry.start_ms}ms -> {entry.end_ms}ms")
         lines.append(f"ZH: {zh}")
-        lines.append(f"EN: {en}")
+        if en:
+            lines.append(f"EN: {en}")
         lines.append("")
     review_path.write_text("\n".join(lines), encoding="utf-8-sig")
     first_zh = sample[0].text.splitlines()[0] if sample and sample[0].text.splitlines() else ""
@@ -336,6 +351,8 @@ def build_preserved_args(args: argparse.Namespace) -> list[str]:
         preserved.extend(["--download-dir", str(Path(args.download_dir).resolve())])
     if args.no_youtube_captions:
         preserved.append("--no-youtube-captions")
+    if args.zh_only:
+        preserved.append("--zh-only")
     if args.cookies:
         preserved.extend(["--cookies", args.cookies])
     if args.cookies_from_browser:
@@ -362,9 +379,28 @@ def ensure_english_srt(source: ResolvedSource, output_path: Path) -> None:
     print(f"[info] copied YouTube English captions -> {output_path}")
 
 
+def subtitle_layout(args: argparse.Namespace) -> str:
+    return LAYOUT_ZH_ONLY if args.zh_only else LAYOUT_BILINGUAL
+
+
+def subtitle_mode_suffix(layout: str) -> str:
+    return "zh" if layout == LAYOUT_ZH_ONLY else "zh-en"
+
+
+def subtitle_srt_suffix(layout: str) -> str:
+    return "zh" if layout == LAYOUT_ZH_ONLY else "zh_en"
+
+
+def subtitle_output_label(layout: str) -> str:
+    return "Chinese-only" if layout == LAYOUT_ZH_ONLY else "bilingual"
+
+
 def process_source(source: ResolvedSource, args: argparse.Namespace, root: Path) -> str:
     video = source.video_path
     stem = video.stem
+    layout = subtitle_layout(args)
+    mode_suffix = subtitle_mode_suffix(layout)
+    srt_suffix = subtitle_srt_suffix(layout)
     subs_dir = root / "subs"
     output_dir = root / "output"
     final_videos_dir = root / "final_videos"
@@ -375,20 +411,20 @@ def process_source(source: ResolvedSource, args: argparse.Namespace, root: Path)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     en_srt = subs_dir / f"{stem}.en.raw.srt"
-    bi_srt = subs_dir / f"{stem}.zh_en.srt"
-    bi_ass = subs_dir / f"{stem}.zh_en.ass"
-    out_mp4 = final_videos_dir / f"{stem}.zh-en-hard.mp4"
-    out_log = logs_dir / f"{stem}.zh-en-hard.ffmpeg.log"
-    out_copy = output_dir / f"{stem}.copy.json"
-    review_txt = output_dir / f"{stem}.subtitle-review.txt"
-    manifest_path = output_dir / f"{stem}.pipeline-manifest.json"
+    translated_srt = subs_dir / f"{stem}.{srt_suffix}.srt"
+    styled_ass = subs_dir / f"{stem}.{srt_suffix}.ass"
+    out_mp4 = final_videos_dir / f"{stem}.{mode_suffix}-hard.mp4"
+    out_log = logs_dir / f"{stem}.{mode_suffix}-hard.ffmpeg.log"
+    out_copy = output_dir / (f"{stem}.zh.copy.json" if layout == LAYOUT_ZH_ONLY else f"{stem}.copy.json")
+    review_txt = output_dir / (f"{stem}.zh.subtitle-review.txt" if layout == LAYOUT_ZH_ONLY else f"{stem}.subtitle-review.txt")
+    manifest_path = output_dir / (f"{stem}.zh.pipeline-manifest.json" if layout == LAYOUT_ZH_ONLY else f"{stem}.pipeline-manifest.json")
     had_review_file = exists_nonempty(review_txt)
     review_is_stale = True
     if had_review_file:
         review_mtime = review_txt.stat().st_mtime
         review_is_stale = any(
             exists_nonempty(path) and review_mtime < path.stat().st_mtime
-            for path in (bi_srt, bi_ass)
+            for path in (translated_srt, styled_ass)
         )
 
     do_copy = True
@@ -408,6 +444,7 @@ def process_source(source: ResolvedSource, args: argparse.Namespace, root: Path)
     video_info = build_video_fingerprint(video)
     source_info = dict(source.source_info)
     source_info["video"] = video_info
+    source_info["subtitle_layout"] = layout
     if source.caption_path and exists_nonempty(source.caption_path):
         source_info["english_caption"] = build_file_fingerprint(source.caption_path)
     glossary_info = build_glossary_fingerprint(glossary_path)
@@ -430,37 +467,53 @@ def process_source(source: ResolvedSource, args: argparse.Namespace, root: Path)
         en_inputs["external_caption"] = build_file_fingerprint(source.caption_path)
     en_current = check_artifact(manifest, "en_srt", en_srt, en_config, en_inputs)
 
-    bi_config = {
+    translated_config = {
         "model": args.model,
         "batch_size": args.batch_size,
         "glossary": glossary_info,
+        "layout": layout,
     }
-    bi_inputs: dict[str, Any] = {
+    translated_inputs: dict[str, Any] = {
         "source": source_info,
         "video": video_info,
     }
     if exists_nonempty(en_srt):
-        bi_inputs["en_srt"] = build_file_fingerprint(en_srt)
-    bi_current = check_artifact(manifest, "bi_srt", bi_srt, bi_config, bi_inputs, required_input_keys=("en_srt",))
+        translated_inputs["en_srt"] = build_file_fingerprint(en_srt)
+    translated_current = check_artifact(
+        manifest,
+        "bi_srt",
+        translated_srt,
+        translated_config,
+        translated_inputs,
+        required_input_keys=("en_srt",),
+    )
 
     ass_config = {
+        "layout": layout,
         "zh_size": args.zh_size,
         "en_size": args.en_size,
         "zh_font": "Microsoft YaHei",
         "en_font": "Arial",
     }
     ass_inputs: dict[str, Any] = {"source": source_info}
-    if exists_nonempty(bi_srt):
-        ass_inputs["bi_srt"] = build_file_fingerprint(bi_srt)
-    ass_current = check_artifact(manifest, "bi_ass", bi_ass, ass_config, ass_inputs, required_input_keys=("bi_srt",))
+    if exists_nonempty(translated_srt):
+        ass_inputs["bi_srt"] = build_file_fingerprint(translated_srt)
+    ass_current = check_artifact(
+        manifest,
+        "bi_ass",
+        styled_ass,
+        ass_config,
+        ass_inputs,
+        required_input_keys=("bi_srt",),
+    )
 
     burn_config = {"approve_burn": True}
     burn_inputs: dict[str, Any] = {
         "source": source_info,
         "video": video_info,
     }
-    if exists_nonempty(bi_ass):
-        burn_inputs["bi_ass"] = build_file_fingerprint(bi_ass)
+    if exists_nonempty(styled_ass):
+        burn_inputs["bi_ass"] = build_file_fingerprint(styled_ass)
     burn_current = check_artifact(manifest, "out_mp4", out_mp4, burn_config, burn_inputs, required_input_keys=("bi_ass",))
 
     copy_config = {"model": args.model}
@@ -468,8 +521,8 @@ def process_source(source: ResolvedSource, args: argparse.Namespace, root: Path)
         "source": source_info,
         "video": video_info,
     }
-    if exists_nonempty(bi_srt):
-        copy_inputs["bi_srt"] = build_file_fingerprint(bi_srt)
+    if exists_nonempty(translated_srt):
+        copy_inputs["bi_srt"] = build_file_fingerprint(translated_srt)
     copy_current = check_artifact(manifest, "out_copy", out_copy, copy_config, copy_inputs, required_input_keys=("bi_srt",))
 
     review_required = (not had_review_file) or review_is_stale
@@ -477,7 +530,7 @@ def process_source(source: ResolvedSource, args: argparse.Namespace, root: Path)
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
     needs_transcription = not (resume and en_current)
-    needs_translation = not (resume and bi_current)
+    needs_translation = not (resume and translated_current)
     needs_ass = not (resume and ass_current)
     needs_burn = args.approve_burn and not (resume and burn_current)
     needs_copy = do_copy and not (resume and copy_current)
@@ -511,67 +564,91 @@ def process_source(source: ResolvedSource, args: argparse.Namespace, root: Path)
     else:
         print(f"[skip] transcription exists: {en_srt}")
 
-    bi_inputs = {
+    translated_inputs = {
         "source": source_info,
         "video": video_info,
         "en_srt": build_file_fingerprint(en_srt),
     }
-    bi_current = check_artifact(manifest, "bi_srt", bi_srt, bi_config, bi_inputs, required_input_keys=("en_srt",))
-    if not (resume and bi_current):
+    translated_current = check_artifact(
+        manifest,
+        "bi_srt",
+        translated_srt,
+        translated_config,
+        translated_inputs,
+        required_input_keys=("en_srt",),
+    )
+    if not (resume and translated_current):
         translate_cmd = [
             "python",
             str(SCRIPT_ROOT / "translate_bilingual.py"),
             "--in",
             str(en_srt),
             "--out",
-            str(bi_srt),
+            str(translated_srt),
             "--model",
             args.model,
             "--batch-size",
             str(args.batch_size),
+            "--layout",
+            layout,
         ]
         if glossary_path:
             translate_cmd.extend(["--glossary", str(glossary_path)])
         run(translate_cmd, cwd=root)
-        record_artifact(manifest, "bi_srt", bi_config, bi_inputs)
+        record_artifact(manifest, "bi_srt", translated_config, translated_inputs)
         review_required = True
     else:
-        print(f"[skip] bilingual srt exists: {bi_srt}")
+        print(f"[skip] {subtitle_output_label(layout).lower()} srt exists: {translated_srt}")
 
     ass_inputs = {
         "source": source_info,
-        "bi_srt": build_file_fingerprint(bi_srt),
+        "bi_srt": build_file_fingerprint(translated_srt),
     }
-    ass_current = check_artifact(manifest, "bi_ass", bi_ass, ass_config, ass_inputs, required_input_keys=("bi_srt",))
+    ass_current = check_artifact(
+        manifest,
+        "bi_ass",
+        styled_ass,
+        ass_config,
+        ass_inputs,
+        required_input_keys=("bi_srt",),
+    )
     if not (resume and ass_current):
         run(
             [
                 "python",
                 str(SCRIPT_ROOT / "srt_to_ass.py"),
                 "--in",
-                str(bi_srt),
+                str(translated_srt),
                 "--out",
-                str(bi_ass),
+                str(styled_ass),
                 "--zh-size",
                 str(args.zh_size),
                 "--en-size",
                 str(args.en_size),
+                "--layout",
+                layout,
             ],
             cwd=root,
         )
         record_artifact(manifest, "bi_ass", ass_config, ass_inputs)
         review_required = True
     else:
-        print(f"[skip] ass exists: {bi_ass}")
+        print(f"[skip] ass exists: {styled_ass}")
 
-    total_entries, first_zh = write_review_file(bi_srt, review_txt, args.review_lines)
+    total_entries, first_zh = write_review_file(
+        translated_srt,
+        review_txt,
+        args.review_lines,
+        layout,
+        english_srt_path=en_srt,
+    )
     record_artifact(manifest, "review_txt", {"review_lines": args.review_lines}, {
         "source": source_info,
-        "bi_srt": build_file_fingerprint(bi_srt),
-        "bi_ass": build_file_fingerprint(bi_ass),
+        "bi_srt": build_file_fingerprint(translated_srt),
+        "bi_ass": build_file_fingerprint(styled_ass),
     })
     save_manifest(manifest_path, manifest)
-    print(f"[review] subtitle file ready: {bi_srt}")
+    print(f"[review] subtitle file ready: {translated_srt}")
     print(f"[review] subtitle sample file: {review_txt}")
     print(f"[review] pipeline manifest: {manifest_path}")
     print(f"[review] total entries: {total_entries}")
@@ -594,7 +671,7 @@ def process_source(source: ResolvedSource, args: argparse.Namespace, root: Path)
     burn_inputs = {
         "source": source_info,
         "video": video_info,
-        "bi_ass": build_file_fingerprint(bi_ass),
+        "bi_ass": build_file_fingerprint(styled_ass),
     }
     burn_current = check_artifact(manifest, "out_mp4", out_mp4, burn_config, burn_inputs, required_input_keys=("bi_ass",))
     if not (resume and burn_current):
@@ -605,7 +682,7 @@ def process_source(source: ResolvedSource, args: argparse.Namespace, root: Path)
                 "--video",
                 str(video),
                 "--ass",
-                str(bi_ass),
+                str(styled_ass),
                 "--out",
                 str(out_mp4),
                 "--log",
@@ -621,7 +698,7 @@ def process_source(source: ResolvedSource, args: argparse.Namespace, root: Path)
         copy_inputs = {
             "source": source_info,
             "video": video_info,
-            "bi_srt": build_file_fingerprint(bi_srt),
+            "bi_srt": build_file_fingerprint(translated_srt),
         }
         copy_current = check_artifact(manifest, "out_copy", out_copy, copy_config, copy_inputs, required_input_keys=("bi_srt",))
         if not (resume and copy_current):
@@ -632,7 +709,7 @@ def process_source(source: ResolvedSource, args: argparse.Namespace, root: Path)
                     "--video",
                     str(video),
                     "--srt",
-                    str(bi_srt),
+                    str(translated_srt),
                     "--model",
                     args.model,
                     "--out",
@@ -646,7 +723,7 @@ def process_source(source: ResolvedSource, args: argparse.Namespace, root: Path)
 
     save_manifest(manifest_path, manifest)
     print("[done] pipeline completed.")
-    print(f"[done] hard subtitle video: {out_mp4}")
+    print(f"[done] {subtitle_output_label(layout).lower()} hard subtitle video: {out_mp4}")
     if do_copy:
         print(f"[done] copy package: {out_copy}")
     return "completed"
@@ -668,7 +745,7 @@ def print_batch_summary(results: list[tuple[str, str]], failures: list[tuple[str
 def main() -> int:
     configure_stdio_utf8()
     parser = argparse.ArgumentParser(
-        description="One-command bilingual subtitle pipeline. Chinese is larger and appears above English."
+        description="One-command subtitle pipeline for Chinese-only or Chinese-English hard subtitles."
     )
     parser.add_argument("video", nargs="?", help="Local video file path (recommended positional input)")
     parser.add_argument("--video", dest="video_option", help="Local video file path")
@@ -682,6 +759,7 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument("--zh-size", type=int, default=48)
     parser.add_argument("--en-size", type=int, default=34)
+    parser.add_argument("--zh-only", action="store_true", help="Output only Chinese subtitles without English lines")
     parser.add_argument("--glossary", help="Optional glossary JSON path")
     parser.add_argument("--no-glossary", action="store_true", help="Disable default glossary")
     parser.add_argument("--copy", action="store_true", help="Generate title/description/hashtags JSON")

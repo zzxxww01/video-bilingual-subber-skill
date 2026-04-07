@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Translate English SRT to Chinese and output bilingual SRT."""
+"""Translate English SRT to Chinese and output bilingual or Chinese-only SRT."""
 
 from __future__ import annotations
 
@@ -44,6 +44,9 @@ RESPONSE_SCHEMA = {
     },
     "required": ["items"],
 }
+
+LAYOUT_BILINGUAL = "bilingual"
+LAYOUT_ZH_ONLY = "zh-only"
 
 
 def load_glossary(path: Path | None) -> dict[str, str]:
@@ -104,6 +107,12 @@ def parse_batch_result(raw_text: str) -> dict[int, str]:
     return out
 
 
+def build_output_text(entry: SrtEntry, zh_text: str, layout: str) -> str:
+    if layout == LAYOUT_ZH_ONLY:
+        return zh_text
+    return f"{zh_text}\n{entry.text}"
+
+
 def translate_batch(
     *,
     api_key: str,
@@ -139,6 +148,7 @@ def main() -> int:
     parser.add_argument("--api-key")
     parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument("--glossary", type=Path)
+    parser.add_argument("--layout", choices=(LAYOUT_BILINGUAL, LAYOUT_ZH_ONLY), default=LAYOUT_BILINGUAL)
     args = parser.parse_args()
 
     if args.batch_size <= 0:
@@ -190,13 +200,18 @@ def main() -> int:
         if not zh:
             missing += 1
             zh = entry.text
-        bilingual_text = f"{zh}\n{entry.text}"
         output_entries.append(
-            SrtEntry(index=entry.index, start_ms=entry.start_ms, end_ms=entry.end_ms, text=bilingual_text)
+            SrtEntry(
+                index=entry.index,
+                start_ms=entry.start_ms,
+                end_ms=entry.end_ms,
+                text=build_output_text(entry, zh, args.layout),
+            )
         )
 
     write_srt(output_srt, output_entries)
-    print(f"[done] wrote bilingual subtitles -> {output_srt}")
+    output_label = "Chinese-only" if args.layout == LAYOUT_ZH_ONLY else "bilingual"
+    print(f"[done] wrote {output_label} subtitles -> {output_srt}")
     if missing:
         print(f"[warn] missing translations for {missing} entries; used English fallback.")
     return 0
