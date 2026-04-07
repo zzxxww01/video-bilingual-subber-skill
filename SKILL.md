@@ -1,21 +1,21 @@
 ---
 name: video-bilingual-subber
-description: Generate bilingual Chinese-English hard subtitles for videos. Use this skill when the user asks to "add bilingual subtitles", "add CN+EN subtitles", "burn Chinese and English captions", "process YouTube video with subtitles", "generate bilingual subs", mentions "双语字幕", "中英字幕", or wants to create hard-subtitled videos with Chinese above English. Also applies when user wants to generate short-video copy (title/description/hashtags) from video content.
-version: 2.0.0
+description: Generate Chinese-only or bilingual Chinese-English hard subtitles for videos. Use this skill when the user asks to "add subtitles", "add Chinese subtitles", "add bilingual subtitles", "add CN+EN subtitles", "burn Chinese captions", "burn Chinese and English captions", "process video with subtitles", "generate bilingual subs", mentions "中文字幕", "双语字幕", "中英字幕", or wants to create hard-subtitled videos. Also applies when user wants to generate short-video copy (title/description/hashtags) from video content.
 license: MIT License - see LICENSE file
 ---
 
 # Video Bilingual Subber
 
-This skill generates production-ready bilingual subtitle videos with Chinese text displayed above English text, using Gemini API for transcription and translation.
+This skill generates production-ready subtitle videos using Gemini API for transcription and translation. It supports bilingual Chinese-English output and Chinese-only hard subtitles.
 
 ## When This Skill Applies
 
 Use this skill when the user wants to:
+- Add Chinese-only subtitles to videos
 - Add bilingual Chinese-English subtitles to videos
 - Process local video files (MP4, MOV, MKV, M4V, WEBM)
 - Download and subtitle YouTube videos
-- Batch process multiple YouTube URLs
+- Process multiple videos one by one with review checkpoints
 - Generate short-video publishing copy (title, description, hashtags)
 - Create hard-subtitled videos with burned-in captions
 
@@ -40,31 +40,50 @@ When executing this skill interactively, follow this gated workflow:
    python scripts/transcribe_gemini.py --in "<video>.mp4" --out "subs/en.raw.srt"
    ```
 
-4. **Translate to Bilingual**
+4. **Translate to Subtitle Output**
    ```bash
-   python scripts/translate_bilingual.py --in "subs/en.raw.srt" --out "subs/zh_en.srt" --batch-size 20
+   # Bilingual output
+   python scripts/translate_bilingual.py --in "subs/en.raw.srt" --out "subs/zh_en.srt" --batch-size 20 --layout bilingual
+
+   # Chinese-only output
+   python scripts/translate_bilingual.py --in "subs/en.raw.srt" --out "subs/zh.srt" --batch-size 20 --layout zh-only
    ```
 
 5. **STOP FOR REVIEW** ⚠️
-   - Read the generated `subs/zh_en.srt` file
-   - Show the user a sample (first 5-10 entries) in the conversation
+   - Read the generated subtitle file (`subs/zh_en.srt` or `subs/zh.srt`)
+   - Even for Chinese-only output, show the user Chinese and English together during review so they can verify the translation against the source line
+   - Send the user the complete subtitle list in the conversation for review, not just a sample
+   - If the subtitle list is Chinese-only, still include the corresponding English lines alongside each entry during review
    - Ask: "Please review these subtitles. Do they look correct? Should I continue?"
    - Wait for explicit confirmation: "yes", "continue", "approve", "looks good"
    - If user requests changes, make edits and ask for confirmation again
+   - If the request includes multiple videos, stop here for the current video and do not start the next video until the user explicitly approves this one
 
 6. **Convert to ASS** (only after approval)
    ```bash
-   python scripts/srt_to_ass.py --in "subs/zh_en.srt" --out "subs/zh_en.ass" --zh-size 48 --en-size 34
+   # Bilingual output
+   python scripts/srt_to_ass.py --in "subs/zh_en.srt" --out "subs/zh_en.ass" --zh-size 48 --en-size 34 --layout bilingual
+
+   # Chinese-only output
+   python scripts/srt_to_ass.py --in "subs/zh.srt" --out "subs/zh.ass" --zh-size 48 --en-size 34 --layout zh-only
    ```
 
 7. **Burn Subtitles** (only after approval)
    ```bash
+   # Bilingual output
    python scripts/burn_ass.py --video "<video>.mp4" --ass "subs/zh_en.ass" --out "final_videos/<video>.zh-en-hard.mp4"
+
+   # Chinese-only output
+   python scripts/burn_ass.py --video "<video>.mp4" --ass "subs/zh.ass" --out "final_videos/<video>.zh-hard.mp4"
    ```
 
 8. **Generate Copy** (optional)
    ```bash
+   # Bilingual output
    python scripts/generate_copy.py --video "<video>.mp4" --srt "subs/zh_en.srt" --out "output/<video>.copy.json"
+
+   # Chinese-only output
+   python scripts/generate_copy.py --video "<video>.mp4" --srt "subs/zh.srt" --out "output/<video>.zh.copy.json"
    ```
 
 ### One-Command Mode (Manual Shell Usage)
@@ -75,12 +94,17 @@ For direct terminal use without interactive review:
 # Local video
 python scripts/run_pipeline.py "video.mp4"
 
+# Local video, Chinese-only
+python scripts/run_pipeline.py "video.mp4" --zh-only
+
 # YouTube single URL
 python scripts/run_pipeline.py --url "https://www.youtube.com/watch?v=VIDEO_ID"
 
 # YouTube batch
 python scripts/run_pipeline.py --url "URL1" --url "URL2" --url "URL3"
 ```
+
+For interactive multi-video requests in Codex, do not use one batch command for local videos or mixed sources. Process one video at a time, stop for review, wait for explicit approval, burn that video, and only then move to the next one.
 
 The pipeline will stop after generating subtitles and create `output/*.subtitle-review.txt`. After manual review:
 
@@ -101,6 +125,7 @@ python scripts/run_pipeline.py "video.mp4" --approve-burn --resume
 - **Translation**: English → Simplified Chinese with batch processing
 - **Glossary support**: Consistent terminology via JSON glossary
 - **Bilingual format**: Chinese (larger) above English (smaller)
+- **Chinese-only mode**: Burn only Simplified Chinese subtitles with `--zh-only`
 - **ASS styling**: Customizable font sizes and positioning
 
 ### Caching & Incremental Runs
@@ -151,6 +176,7 @@ Place these in `.env.local` (recommended) or export as environment variables.
 | `--force` | Rerun all steps | - |
 | `--approve-burn` | Allow subtitle burning | Required for burn |
 | `--review-lines` | Review sample size | 12 |
+| `--zh-only` | Output Chinese-only subtitles | Disabled |
 | `--no-youtube-captions` | Force Gemini transcription | - |
 | `--cookies` | YouTube cookies file | - |
 | `--cookies-from-browser` | Browser cookie source | - |
@@ -163,12 +189,17 @@ downloads/                          # YouTube source videos
 downloads/_meta/*.source.json       # YouTube metadata
 subs/*.en.raw.srt                   # English transcription
 subs/*.zh_en.srt                    # Bilingual SRT
-subs/*.zh_en.ass                    # Styled ASS subtitles
+subs/*.zh_en.ass                    # Styled bilingual ASS subtitles
+subs/*.zh.srt                       # Chinese-only SRT
+subs/*.zh.ass                       # Styled Chinese-only ASS subtitles
 output/*.subtitle-review.txt        # Review sample
+output/*.zh.subtitle-review.txt     # Chinese-only review sample
 output/*.pipeline-manifest.json     # Cache metadata
+output/*.zh.pipeline-manifest.json  # Chinese-only cache metadata
 output/*.copy.json                  # Publishing copy
 output/logs/*.ffmpeg.log            # Burn logs
-final_videos/*.zh-en-hard.mp4       # Final output
+final_videos/*.zh-en-hard.mp4       # Final bilingual output
+final_videos/*.zh-hard.mp4          # Final Chinese-only output
 ```
 
 ## Glossary Format
@@ -226,6 +257,8 @@ python scripts/check_repo_safety.py --strict
 ## Important Notes
 
 - **Review gate**: Always stop after subtitle generation for user review in interactive mode
+- **Full review content**: During interactive review, paste the full subtitle set into the conversation. Do not send only the first few entries unless the user explicitly asks for a sample.
+- **Multi-video interactive rule**: For multiple local videos or mixed inputs, process exactly one video at a time and wait for approval before starting the next
 - **Burn approval**: The `--approve-burn` flag is required to burn subtitles into video
 - **First run behavior**: Even with `--approve-burn`, first run stops for review
 - **Manifest tracking**: Changing parameters invalidates downstream cache automatically
